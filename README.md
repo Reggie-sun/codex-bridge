@@ -6,7 +6,7 @@ Codex Bridge is a Windows named-pipe relay and strict app-server JSON-RPC gate i
 
 - Windows Codex CLI 0.160.0 and the older fixed-entry initialize/thread-start path were observed in a prior settled handshake: requested `fast`, native response `priority`. That run submitted no task and started no model turn. This is old-install evidence, not a test of the new selector.
 - This package adds an optional thread-start service-tier selector. The new selector has not been installed on Windows or runtime-tested. `default` is the default request; `fast` is an opt-in request.
-- The combined package suite currently passes 110 tests; two are skipped (authorized Windows native integration and an omitted private diagnostic module). Windows native child/Job Object tests are not exercised by the fake suite. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
+- The package suite passes 114 tests; two are skipped (authorized Windows native integration and an omitted private diagnostic module). Windows native child/Job Object tests are not exercised by the fake suite. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
 - Native sandbox enforcement, protected-root unreadability, and current Linux-to-Windows cross-machine authentication are not established by these results.
 
 ## Design limits
@@ -19,7 +19,9 @@ The broker pins `gpt-6.1-sol` and reasoning effort `high`. `thread/start.service
 
 Copy `settings.example.json` to a private `settings.private.json` beside the broker only after replacing every placeholder. Store the workspace path and journal path in the local configuration; do not commit the private file or journal directory. The `app.py` hash is an explicit public-source binding for the sample code and must be computed for the intended public source tree.
 
-The config template is not an installer. The Windows private installer uses a journaled transaction for source files, settings, and receipt, and retains hash-verified backups. Before migrating settings, it requires the installed sources to match the existing private receipt, the old broker's pinned `app.py` hash to match the exact existing workspace, and the receipt workspace to match the private settings. It then adds only `workspace_source_sha256` and installs the byte-identical public broker. Migration rejects drift and preserves the existing workspace and journal-root values. New journals and transaction stage files accept inherited ACLs only when their parent remains protected and the file has exactly current-user and SYSTEM full-control inherited ACEs. Other objects retain the explicit protected-ACL check; no existing ACL is rewritten. This flow has offline fault-injection coverage; real Windows `ReplaceFileW` ACL behavior still needs an authorized integration check.
+The config template is not an installer. The Windows private installer uses a journaled transaction for source files, settings, and receipt, and retains hash-verified backups. Before migrating settings, it requires the installed sources to match the existing private receipt, the old broker's pinned `app.py` hash to match the exact existing workspace, and the receipt workspace to match the private settings. It then adds only `workspace_source_sha256` and installs the byte-identical public broker. Migration rejects drift and preserves the existing workspace and journal-root values. New journals and transaction stage files accept inherited ACLs only when their parent remains protected and the file has exactly current-user and SYSTEM full-control inherited ACEs. Other objects retain the explicit protected-ACL check; no existing ACL is rewritten. A user-run elevated PowerShell scratch integration verified actual `ReplaceFileW`, the missing-target restore path, and exact ACL matching; the partial-replacement disposition was simulated by removing the scratch target while retaining its bound backup. The production preflight also passed under that user token, and the helper made no production writes or ACL changes. Production installation and private-settings migration remain unperformed.
+
+An incomplete journal whose targets and backups all match the old hashes and exact ACL identities is explicitly marked `RESTORED_STATE_VERIFIED`; later scans revalidate that state. A hash or ACL mismatch stops recovery instead of replaying or silently ignoring the journal.
 
 ## Development
 
@@ -79,8 +81,9 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 1. On Windows, run the private helper only after its read-only owner/ACL/source
    preflight passes. It fails closed on source, workspace, or receipt drift and
    uses `ReplaceFileW` with flags zero, retained backups, and rollback journal.
-   The real Windows ACL-preservation path remains untested until an authorized
-   local run.
+   An isolated authorized Windows run has verified ReplaceFileW and missing-target
+   restoration on scratch files. The actual installation and private-settings
+   migration remain pending.
 2. The helper installs the broker, entry, and gate from the source hashes in
    `PUBLIC_BUILD.json`. It transactionally migrates only the private workspace
    hash field after proving it equals the old installed broker pin and the existing
@@ -94,3 +97,4 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 
 This Linux change did not install, authenticate, handshake, run a model task,
 contact another session, or replay any prior task.
+
