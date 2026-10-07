@@ -32,7 +32,9 @@ class TransactionRecoveryFailed(RuntimeError):
 
 class TransactionJournalAclPreflightFailed(RuntimeError):
     """A new empty journal failed ACL validation before PREPARED or target changes."""
-    pass
+    def __init__(self, reason: str, validation_failure: str):
+        super().__init__(reason)
+        self.validation_failure = validation_failure
 
 
 def digest(data: bytes) -> str:
@@ -57,6 +59,11 @@ class SelectorTransaction:
     def recover_existing(self, targets: dict[str, Path]) -> list[str]:
         recovered = []
         for journal in sorted(self.journal_root.glob("selector-txn-*.jsonl")):
+            # A failed pre-PREPARED creation can leave an empty file. It carries
+            # no WAL data and is preserved; in particular, an elevated creator's
+            # token-default owner must not block recovery of bound transactions.
+            if journal.stat().st_size == 0:
+                continue
             self.ops.verify_acl(journal)
             try:
                 raw = self.ops.read(journal).decode("utf-8")
@@ -86,7 +93,11 @@ class SelectorTransaction:
                 raise RuntimeError("TRANSACTION_JOURNAL_SCOPE_INVALID")
             if terminal and any(record.get("event") == "RESTORED_STATE_VERIFIED"
                                 for record in records):
-                self._verify_restored_state(prepared, targets)
+                try:
+                    self._verify_restored_state(prepared, targets)
+                except RuntimeError:
+                    if not self._committed_state_supersedes(prepared, targets, journal):
+                        raise
                 continue
             if not terminal:
                 if self._is_restored_state(prepared, targets):
@@ -97,6 +108,57 @@ class SelectorTransaction:
                     self.recover(prepared, journal, targets)
                 recovered.append(str(journal))
         return recovered
+
+    def _committed_state_supersedes(self, restored: dict, targets: dict[str, Path],
+                                    restored_journal: Path) -> bool:
+        """Accept a later committed state only when it starts from this marker's old hashes."""
+        restored_entries = restored.get("entries", [])
+        restored_old = {entry.get("name"): entry.get("old_sha256")
+                        for entry in restored_entries}
+        if len(restored_old) != len(targets) or set(restored_old) != set(targets):
+            return False
+        for candidate in self.journal_root.glob("selector-txn-*.jsonl"):
+            if candidate == restored_journal or candidate.stat().st_size == 0:
+                continue
+            try:
+                self.ops.verify_acl(candidate)
+                records = [json.loads(line) for line in
+                           self.ops.read(candidate).decode("utf-8").splitlines()]
+                if not any(record.get("event") == "COMMITTED" for record in records):
+                    continue
+                manifest = next((record.get("manifest") for record in records
+                                 if record.get("event") == "PREPARED"), None)
+                entries = manifest.get("entries", []) if isinstance(manifest, dict) else []
+                names = [entry.get("name") for entry in entries]
+                if (manifest.get("schema") != "feige-selector-transaction/v1"
+                        or len(names) != len(targets) or set(names) != set(targets)
+                        or len(set(names)) != len(names)):
+                    continue
+                if {entry["name"]: entry.get("old_sha256") for entry in entries} != restored_old:
+                    continue
+                valid = True
+                for entry in entries:
+                    target = targets[entry["name"]]
+                    backup_name = entry.get("backup", "")
+                    if (Path(backup_name).name != backup_name
+                            or not backup_name.startswith(
+                                "selector-backup-" + str(manifest.get("transaction_id")) + "-")):
+                        valid = False
+                        break
+                    backup = self.journal_root / backup_name
+                    if (not target.is_file() or not backup.is_file()
+                            or digest(self.ops.read(target)) != entry.get("new_sha256")
+                            or digest(self.ops.read(backup)) != entry.get("old_sha256")):
+                        valid = False
+                        break
+                    self.ops.verify_acl(target)
+                    self.ops.verify_acl(backup)
+                    self.ops.verify_same_acl(target, backup)
+                if valid:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _verify_restored_state(self, manifest: dict, targets: dict[str, Path]) -> None:
         try:
@@ -149,6 +211,7 @@ class SelectorTransaction:
                 if digest(self.ops.read(target)) != entry["old_sha256"]:
                     raise RuntimeError("ROLLBACK_HASH_MISMATCH")
                 self.ops.verify_acl(target)
+                self.ops.verify_same_acl(target, backup)
                 self._append(journal, {"event": "ROLLED_BACK", "name": entry["name"]})
                 continue
             stage = self.control_root / (".selector-restore-" + txid + "-" + entry["name"])
@@ -163,6 +226,7 @@ class SelectorTransaction:
             if digest(self.ops.read(target)) != entry["old_sha256"]:
                 raise RuntimeError("ROLLBACK_HASH_MISMATCH")
             self.ops.verify_acl(target)
+            self.ops.verify_same_acl(target, backup)
             self._append(journal, {"event": "ROLLED_BACK", "name": entry["name"]})
         self._append(journal, {"event": "ROLLBACK_COMPLETE"})
 
@@ -192,9 +256,20 @@ class SelectorTransaction:
         try:
             self.ops.verify_acl(journal)
             self.ops.flush_directory(self.journal_root)
-        except Exception:
+        except Exception as exc:
+            candidate = exc.args[0] if exc.args else None
+            allowed = {
+                "TRANSACTION_JOURNAL_PARENT_ACL_INVALID",
+                "TRANSACTION_JOURNAL_FILE_ACL_INVALID",
+                "JOURNAL_ACL_UNVERIFIED", "JOURNAL_ACL_INVALID",
+                "JOURNAL_PATH_INVALID",
+            }
+            validation_failure = candidate if isinstance(candidate, str) and candidate in allowed \
+                else "JOURNAL_ACL_VALIDATION_EXCEPTION"
+            reason = (validation_failure if validation_failure.startswith("TRANSACTION_")
+                      else "TRANSACTION_JOURNAL_FILE_ACL_INVALID")
             raise TransactionJournalAclPreflightFailed(
-                "TRANSACTION_JOURNAL_FILE_ACL_INVALID") from None
+                reason, validation_failure) from None
         self._append(journal, {"event": "PREPARED", "manifest": manifest})
         preserve_stages = False
         try:
@@ -218,6 +293,7 @@ class SelectorTransaction:
                 self.ops.flush_directory(self.journal_root)
                 self.ops.verify_acl(target)
                 self.ops.verify_acl(backup)
+                self.ops.verify_same_acl(target, backup)
                 if digest(self.ops.read(target)) != entry["new_sha256"]:
                     raise RuntimeError("TARGET_HASH_MISMATCH")
                 if digest(self.ops.read(backup)) != entry["old_sha256"]:
@@ -243,6 +319,12 @@ class SelectorTransaction:
                 stage_name = getattr(recovery_error, "stage", "RECOVERY")
                 raise TransactionRecoveryFailed(
                     "TRANSACTION_RECOVERY_INCOMPLETE", stage_name, code) from None
+            # Keep the original public error type/message while exposing the
+            # successfully completed rollback to the installer for safe status.
+            try:
+                operation_error.transaction_rollback_complete = True
+            except Exception:
+                pass
             raise operation_error
         finally:
             # Failed rollback may need the staged replacement to restore a
