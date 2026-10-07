@@ -34,4 +34,3 @@ The fake tests do not replace verification of Windows ACL behavior, native sandb
 ## Scope
 
 This repository intentionally excludes machine-specific workspace hashes, accounts, SIDs, IP addresses, SSH keys/configuration, private receipts, diagnostics, journals, and business task payloads. The private Windows installation state remains separate from this public package.
-
