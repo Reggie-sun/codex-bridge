@@ -4,9 +4,9 @@ Codex Bridge is a Windows named-pipe relay and strict app-server JSON-RPC gate i
 
 ## Current state
 
-- Windows Codex CLI 0.160.0 has the fixed service-tier selector installed. Its private v2 receipt binds the three installed source hashes, and the public package contains byte-identical copies of those sources. The transaction committed all five targets, retained hash-verified backups, preserved the existing ACLs, and migrated the workspace source binding.
+- Windows Codex CLI 0.160.0 has the fixed service-tier selector installed. A no-secret startup diagnostic then exposed a schema mismatch: the installed public broker expects a different settings schema identifier from the validated private settings migration. The corrected broker constant and regression test are prepared here, but have not been installed; the current receipt still binds the currently installed source hashes. The five-target install transaction committed, retained hash-verified backups, preserved ACLs, and migrated the workspace source binding.
 - The current selector has not been runtime-tested through the Linux-to-Windows path. A prior settled handshake requested `fast` and the native response was `priority`, but it predates this selector installation, submitted no task, and started no model turn.
-- The package suite passes 119 tests; two are skipped (authorized Windows native integration and an omitted private diagnostic module). A real elevated five-target scratch transaction passed commit, rollback, missing-target restore, and strict ACL comparisons without writing production files. Windows native child/Job Object tests are not exercised by the fake suite.
+- The package suite passes 119 tests; three are skipped (Windows-native integration cases unavailable in this public package). A real elevated five-target scratch transaction passed commit, rollback, missing-target restore, and strict ACL comparisons without writing production files. Windows native child/Job Object tests are not exercised by the fake suite.
 - Native sandbox enforcement, protected-root unreadability, and current Linux-to-Windows cross-machine authentication are not established by these results.
 
 ## Design limits
@@ -78,12 +78,16 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 
 ## Remaining Linux handoff
 
-1. Update Linux Parent to the reviewed public branch and verify the Windows v2
+1. Install the prepared broker schema fix and update only its matching hash in the
+   private v2 receipt, preserving the other receipt fields. Re-run the no-secret
+   broker startup preflight and verify the ready state before Linux handoff.
+2. Update Linux Parent to the reviewed public branch and verify the Windows v2
    receipt's three component hashes against this package before enabling selector
    parameters. Do not treat the earlier pre-install handshake as current evidence.
-2. After separate runtime authorization, perform one bounded fixed-entry handshake
+3. After separate runtime authorization, perform one bounded fixed-entry handshake
    and check native `thread/start.serviceTier` responses for `default` and `fast`.
    Do not start a task or retry an unknown result automatically.
 
 The Windows installation did not restart the broker, authenticate Linux, perform a
 new handshake, run a model task, contact another session, or replay a prior task.
+
