@@ -212,7 +212,9 @@ def _inherited_private_acl_facts_valid(owner_sid: str, user_sid: str,
     )
 
 
-def _verify_inherited_private_file_acl(path: Path, protected_parent: Path) -> None:
+def _verify_inherited_private_file_acl(path: Path, protected_parent: Path, *,
+                                       parent_error: str = "JOURNAL_ACL_INVALID",
+                                       file_error: str = "JOURNAL_ACL_INVALID") -> None:
     """Verify a newly created journal file inheriting only the protected journal DACL.
 
     The parent must retain the normal protected private-directory ACL. The child
@@ -221,7 +223,12 @@ def _verify_inherited_private_file_acl(path: Path, protected_parent: Path) -> No
     """
     if os.name != "nt":
         raise Reject("WINDOWS_ACL_REQUIRED")
-    _verify_private_acl(protected_parent, expected_flags=3)
+    try:
+        _verify_private_acl(protected_parent, expected_flags=3)
+    except Reject as exc:
+        if exc.args and exc.args[0] == "JOURNAL_ACL_INVALID":
+            raise Reject(parent_error) from None
+        raise
     attributes = _k32.GetFileAttributesW(str(path))
     if attributes == 0xFFFFFFFF or attributes & 0x400:
         raise Reject("JOURNAL_PATH_INVALID")
@@ -254,7 +261,7 @@ def _verify_inherited_private_file_acl(path: Path, protected_parent: Path) -> No
             aces.append((int(raw[0]), int(raw[1]), int(mask), sid))
         if not _inherited_private_acl_facts_valid(
                 _sid_to_string(owner), _current_user_sid(), bool(control.value & 0x1000), aces):
-            raise Reject("JOURNAL_ACL_INVALID")
+            raise Reject(file_error)
     except Reject:
         raise
     except Exception:
@@ -1207,9 +1214,4 @@ def diagnose_result_shape(raw: str, metrics: dict[str, str]) -> dict[str, Any]:
     elif not result["schema_value_match"]:
         result["diagnostic_code"] = "FINAL_SCHEMA_VALUE_INVALID"
     elif not result["status_reason_relation_valid"]:
-        result["diagnostic_code"] = "FINAL_STATUS_REASON_INVALID"
-    elif not result["metrics_object"] or not result["metrics_field_set_exact"]:
-        result["diagnostic_code"] = "FINAL_METRICS_FIELD_SET_INVALID"
-    elif not result["metric_types_valid"]:
-        result["diagnostic_code"] = "FINAL_METRIC_TYPE_INVALID"
-    return result
+        result["diagnos
