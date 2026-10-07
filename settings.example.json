@@ -1,0 +1,6 @@
+{
+  "schema": "feige-codex-bridge-settings/v1",
+  "workspace": "C:\\path\\to\\public-source",
+  "journal_root": "C:\\path\\to\\private\\journals",
+  "workspace_source_sha256": "replace-with-64-lowercase-hex-characters"
+}
