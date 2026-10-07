@@ -14,7 +14,7 @@ from feige_codex_control_entry import CLIENT_EOF, PIPE_NAME
 from windows_control_gate import (_current_user_sid, _verify_private_acl,
                                   _sid_to_string, run_native_control, Reject)
 
-CONFIG_SCHEMA = "feige-codex-bridge-settings/v1"
+CONFIG_SCHEMA = "feige-codex-control-private-settings/v1"
 CODEX_RELATIVE = (Path("npm") / "node_modules" / "@openai" / "codex" / "node_modules" /
                   "@openai" / "codex-win32-x64" / "vendor" / "x86_64-pc-windows-msvc" /
                   "bin" / "codex.exe")
@@ -563,3 +563,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
