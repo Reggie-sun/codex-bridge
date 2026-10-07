@@ -14,7 +14,7 @@ import pytest
 
 from windows_control_gate import (BOUNDARIES, BoundedChild, DurableConsumptionJournal,
                                   ProtocolGate, Reject, WindowsControlProxy,
-                                  _k32, boundaries_digest_ok, diagnose_result_shape,
+                                  boundaries_digest_ok, diagnose_result_shape,
                                   parse_frame, parse_result)
 
 
@@ -271,6 +271,7 @@ def test_journal_write_once_and_settlement_record(monkeypatch):
     import windows_control_gate as module
     import stat
     from types import SimpleNamespace
+    monkeypatch.setattr(module, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
     root = Path(os.getcwd()) / "journal-root-for-fake"
     monkeypatch.setattr(DurableConsumptionJournal, "_verify_directory_acl", lambda self: None)
     monkeypatch.setattr(module, "_verify_private_acl", lambda path, expected_flags=0: None)
@@ -310,6 +311,7 @@ def test_journal_write_once_and_settlement_record(monkeypatch):
     assert len(fsyncs) == 2
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_bounded_child_jsonl_and_kill_on_close_job_object():
     code = "import json,sys; [print(json.dumps({'id':m.get('id'),'result':{'ok':True}}),flush=True) for m in map(json.loads,sys.stdin)]"
     child = BoundedChild([sys.executable, "-u", "-c", code], os.getcwd(), wall_seconds=5)
@@ -321,6 +323,7 @@ def test_bounded_child_jsonl_and_kill_on_close_job_object():
     assert child.proc.poll() is not None
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_bounded_child_deadline_and_output_caps():
     slow = BoundedChild([sys.executable, "-u", "-c", "import time; time.sleep(5)"],
                         os.getcwd(), wall_seconds=1)
@@ -336,6 +339,7 @@ def test_bounded_child_deadline_and_output_caps():
     noisy.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_bounded_child_frame_and_pending_input_caps():
     oversized = BoundedChild([sys.executable, "-u", "-c",
                               "import sys;sys.stdout.buffer.write(b'x'*257+b'\\n');sys.stdout.flush()"],
@@ -351,6 +355,7 @@ def test_bounded_child_frame_and_pending_input_caps():
     no_reader.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_bounded_child_combined_stdout_stderr_cap():
     code = "import sys;sys.stdout.write('x'*2500);sys.stdout.flush();sys.stderr.write('y'*2500);sys.stderr.flush()"
     child = BoundedChild([sys.executable, "-u", "-c", code], os.getcwd(),
@@ -360,6 +365,7 @@ def test_bounded_child_combined_stdout_stderr_cap():
     child.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_bounded_child_pending_stdin_backpressure_times_out():
     child = BoundedChild([sys.executable, "-u", "-c", "import time;time.sleep(5)"],
                          os.getcwd(), wall_seconds=1, pending_limit=65_536)
@@ -371,7 +377,9 @@ def test_bounded_child_pending_stdin_backpressure_times_out():
         child.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_job_object_close_kills_child_tree():
+    from windows_control_gate import _k32
     code = ("import subprocess,sys,time,json; "
             "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']); "
             "print(json.dumps({'pid':p.pid}),flush=True);time.sleep(60)")
@@ -471,6 +479,7 @@ for line in sys.stdin:
 '''
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_fake_subprocess_proxy_duplex_tool_approval_and_journal_settle():
     root = Path(os.getcwd())
     workspace = os.getcwd()

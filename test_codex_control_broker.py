@@ -89,6 +89,7 @@ def test_entry_pipe_relay_to_broker_fake_preserves_jsonl_and_final_after_stdin_e
     server_sock.close()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows native child / Job Object")
 def test_fake_native_appserver_roundtrips_through_pipeclient_and_broker():
     client_sock, server_sock = socket.socketpair()
     client_pipe = client_sock.makefile("rwb", buffering=0)
@@ -208,6 +209,9 @@ def _pipe_api_events(capsys):
 
 
 def test_entry_pipe_diagnostic_waitnamedpipe_failure_is_stage_and_code_only(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(entry, "os", SimpleNamespace(**{**vars(os), "name": "nt", "O_BINARY": getattr(os, "O_BINARY", 0)}))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace())
     class Call:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
@@ -217,8 +221,8 @@ def test_entry_pipe_diagnostic_waitnamedpipe_failure_is_stage_and_code_only(monk
         CreateFileW = Call(lambda *_: None)
 
     monkeypatch.setenv("FEIGE_CONTROL_DIAGNOSTICS", "1")
-    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel())
-    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 2)
+    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel(), raising=False)
+    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 2, raising=False)
     with pytest.raises(RuntimeError, match="CONTROL_BROKER_UNAVAILABLE"):
         entry._connect_pipe()
     assert _pipe_api_events(capsys) == [
@@ -227,6 +231,9 @@ def test_entry_pipe_diagnostic_waitnamedpipe_failure_is_stage_and_code_only(monk
 
 
 def test_entry_pipe_diagnostic_createfile_failure_records_winerror(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(entry, "os", SimpleNamespace(**{**vars(os), "name": "nt", "O_BINARY": getattr(os, "O_BINARY", 0)}))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace())
     class Call:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
@@ -236,8 +243,8 @@ def test_entry_pipe_diagnostic_createfile_failure_records_winerror(monkeypatch, 
         CreateFileW = Call(lambda *_: None)
 
     monkeypatch.setenv("FEIGE_CONTROL_DIAGNOSTICS", "1")
-    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel())
-    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 5)
+    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel(), raising=False)
+    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 5, raising=False)
     with pytest.raises(RuntimeError, match="CONTROL_BROKER_CONNECT_FAILED_5"):
         entry._connect_pipe()
     assert _pipe_api_events(capsys) == [
@@ -247,6 +254,9 @@ def test_entry_pipe_diagnostic_createfile_failure_records_winerror(monkeypatch, 
 
 
 def test_entry_pipe_diagnostic_duplicatehandle_failure_records_stage_and_code(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(entry, "os", SimpleNamespace(**{**vars(os), "name": "nt", "O_BINARY": getattr(os, "O_BINARY", 0)}))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace())
     class Call:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
@@ -259,8 +269,8 @@ def test_entry_pipe_diagnostic_duplicatehandle_failure_records_stage_and_code(mo
         CloseHandle = Call(lambda *_: 1)
 
     monkeypatch.setenv("FEIGE_CONTROL_DIAGNOSTICS", "1")
-    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel())
-    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 6)
+    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel(), raising=False)
+    monkeypatch.setattr(entry.ctypes, "get_last_error", lambda: 6, raising=False)
     with pytest.raises(RuntimeError, match="CONTROL_PIPE_DUPLICATE_FAILED"):
         entry._connect_pipe()
     assert _pipe_api_events(capsys) == [
@@ -271,6 +281,9 @@ def test_entry_pipe_diagnostic_duplicatehandle_failure_records_stage_and_code(mo
 
 
 def test_entry_pipe_diagnostic_open_osfhandle_records_errno_without_exception_text(monkeypatch, capsys):
+    from types import SimpleNamespace
+    monkeypatch.setattr(entry, "os", SimpleNamespace(**{**vars(os), "name": "nt", "O_BINARY": getattr(os, "O_BINARY", 0)}))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace())
     class Call:
         def __init__(self, fn): self.fn = fn
         def __call__(self, *args): return self.fn(*args)
@@ -295,7 +308,7 @@ def test_entry_pipe_diagnostic_open_osfhandle_records_errno_without_exception_te
         def open_osfhandle(*_args): raise OSError(9, "private exception text")
 
     monkeypatch.setenv("FEIGE_CONTROL_DIAGNOSTICS", "1")
-    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel())
+    monkeypatch.setattr(entry.ctypes, "WinDLL", lambda *_args, **_kwargs: Kernel(), raising=False)
     monkeypatch.setitem(sys.modules, "msvcrt", Msvcrt)
     with pytest.raises(OSError):
         entry._connect_pipe()

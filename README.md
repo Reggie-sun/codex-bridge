@@ -6,7 +6,7 @@ Codex Bridge is a Windows named-pipe relay and strict app-server JSON-RPC gate i
 
 - Windows Codex CLI 0.160.0 and the older fixed-entry initialize/thread-start path were observed in a prior settled handshake: requested `fast`, native response `priority`. That run submitted no task and started no model turn. This is old-install evidence, not a test of the new selector.
 - This package adds an optional thread-start service-tier selector. The new selector has not been installed on Windows or runtime-tested. `default` is the default request; `fast` is an opt-in request.
-- The curated package's offline suite passes 65 tests; two platform/private-helper tests are skipped. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
+- The original Windows package reported 65 passing tests and two skipped tests. The Linux parent adapter is covered by the offline suite; Windows native child/Job Object tests are explicitly skipped on Linux. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
 - Native sandbox enforcement, protected-root unreadability, and current Linux-to-Windows cross-machine authentication are not established by these results.
 
 ## Design limits
@@ -34,3 +34,60 @@ The fake tests do not replace verification of Windows ACL behavior, native sandb
 ## Scope
 
 This repository intentionally excludes machine-specific workspace hashes, accounts, SIDs, IP addresses, SSH keys/configuration, private receipts, diagnostics, journals, and business task payloads. The private Windows installation state remains separate from this public package.
+
+## Linux parent integration
+
+`linux_parent.py` is a transport-neutral adapter for the existing authenticated,
+bounded Linux parent. It does not open SSH, install Windows files, start a model
+turn, or replace the host parent's private-input validation and consumption ledger.
+The only selectable option is `service_tier`: omit it for ordinary routing, or use
+`"default"` / `"fast"`. Model and effort remain `gpt-6.1-sol` / `high`.
+
+```python
+from linux_parent import LinuxThreadStart
+
+# receipt: loaded privately after the existing owner/0600, identity, key, host-pin,
+# source restriction, wrapper/evidence and bound-workspace checks. Never log it.
+selection = LinuxThreadStart(receipt)  # ordinary; explicit serviceTier="default"
+# OR, for a separately authorized connection:
+# selection = LinuxThreadStart(receipt, service_tier="fast")
+
+# Only after deployment and live authorization: use the existing parent's durable
+# once ledger, fixed SSH command and bounded initialize/initialized exchange.
+params = selection.params()
+# result = existing_parent._request("thread/start", params)
+# owned_thread_id = selection.validate_response(result)
+```
+
+Construct the adapter **before opening any transport**. It refuses a v2 receipt
+whose broker, entry or gate hashes differ from this checkout, including historical
+model-pin receipts. This is a freshness check, not proof of installation or ACLs.
+Do not create a receipt from the public build manifest. The `params()` result is
+private wire data because it includes the bound workspace; do not print it.
+Do not pass arbitrary model/config/provider/cwd/permission options.
+
+Feed only the correlated native `thread/start` result to `validate_response`.
+The adapter checks workspace and guards, exact model/effort, thread ID and tier;
+it never rewrites native data. Fast requires `priority` on pinned CLI 0.160.0.
+Ordinary accepts explicit `null` (no tier) or `default`; a missing field remains
+unverified. Neither outcome proves backend service fulfillment. Failed/unknown
+validation cannot be retried on the object. The host's durable no-replay ledger,
+900s / 16MiB / 1MiB-frame / 64KiB-pending limits, and task settlement stay mandatory.
+
+## Deployment pending
+
+1. On Windows, verify installer ownership, ACL preservation/rollback and real
+   `ReplaceFileW` integration before installing the selector; fake transaction
+   tests alone do not authorize installation.
+2. Compare the currently installed entry/broker/gate bytes (including newer entry
+   diagnostics) with this public package. Reconcile differences rather than
+   overwriting them with stale copies; preserve backups and all consumed journals.
+3. After an authorized local install/reload, privately deliver the full updated v2
+   receipt with exact installed source bindings. Existing Linux/USB receipts are
+   not a current-selector deployment proof.
+4. Only with separate runtime authorization, verify ordinary/fast native responses
+   through the actual entry, with zero turns/tools and no automatic retry. Prior
+   successful prompt evidence and all UNKNOWN outcomes remain historical records.
+
+This Linux change did not install, authenticate, handshake, run a model task,
+contact another session, or replay any prior task.

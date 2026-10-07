@@ -10,7 +10,7 @@ Each connection owns one native app-server child process and one ephemeral threa
 4. `turn/start` for the connection-owned thread with one bounded public text task and a unique client message ID.
 5. `turn/interrupt` for the connection-owned active turn.
 
-`thread/start.serviceTier` is the sole optional selector: `"default"` or `"fast"`. If absent, the gate inserts `"default"` before forwarding. Other values are rejected. The selected value is a request; the gate does not rewrite the native response. Current Linux parent support has not been verified.
+`thread/start.serviceTier` is the sole optional selector: `"default"` or `"fast"`. If absent, the gate inserts `"default"` before forwarding. Other values are rejected. The selected value is a request; the gate does not rewrite the native response. The transport-neutral Linux adapter is covered by fake protocol tests; live selector support remains unverified.
 
 For Codex CLI 0.160.0, official source `codex-rs/protocol/src/config_types.rs` at tag `rust-v0.160.0`, lines 3041–3084, defines the explicit standard request sentinel, maps both `fast` and `priority` to `ServiceTier::Fast`, and serializes that tier as `priority`: [pinned source lines](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/protocol/src/config_types.rs#L3041-L3084). This proves the CLI's canonical name mapping, not that the backend fulfills every Fast request. Separately, an earlier settled Windows handshake requested `fast` and returned `priority`; it submitted no task and started no model turn. The new optional selector has not been installed or runtime-tested.
 
@@ -23,3 +23,15 @@ The broker records task consumption before forwarding `turn/start`. A result is 
 ## Limits
 
 The source enforces bounded frames, task text, pending input, output, and wall time. See constants in `windows_control_gate.py`. Fake tests verify protocol rules, not operating-system sandbox enforcement or private-root denial.
+
+## Linux response guard
+
+`LinuxThreadStart` accepts only omitted/default/fast selection and derives cwd
+from a privately validated, source-matched v2 receipt. It exposes no arbitrary
+request overrides. The existing parent's RPC ID correlation and bounded transport
+remain responsible for selecting the `thread/start` result. A missing model,
+effort, tier or thread identity blocks progression; fields are not synthesized.
+The native tier field is nullable in the pinned [ThreadStartResponse schema](https://github.com/openai/codex/blob/rust-v0.160.0/codex-rs/app-server-protocol/schema/json/v2/ThreadStartResponse.json).
+Explicit null is treated as no selected tier for a standard request; an absent
+field is not accepted as null. Fast requires the canonical `priority` response.
+These are local acceptance checks, not OS isolation or provider SLA evidence.
