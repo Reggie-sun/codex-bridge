@@ -1,7 +1,7 @@
 {
   "schema": "codex-bridge-public-build/v1",
   "package": "Codex Bridge",
-  "state": "SOURCE_REVIEWED_NOT_DEPLOYED",
+  "state": "INSTALLED_WITH_RUNTIME_SELECTION_UNVERIFIED",
   "files": {
     ".gitignore": "bcc4174f8d11602e49c308cfaad62c1fef42d99c1ce9db8fb3340f54e3ef76fc",
     "codex_service_tier_mapping.py": "019a213b7cd144f470106d0982cc05585b2e01cc4e6f3d81c9036f78270c9215",
@@ -56,11 +56,11 @@
       "production_acl_changed": false
     },
     "latest_elevated_journal_owner_inheritance_probe": "PASS_USER_RUN_ELEVATED_POWERSHELL",
-    "latest_production_attempt": "PREPARED_THEN_ROLLBACK_COMPLETE_ZERO_REPLACED_ALL_FIVE_OLD_TARGETS_MATCH_NO_STAGE_OR_BACKUP_REMAINS",
+    "latest_production_attempt": "COMMITTED_FIVE_TARGET_TRANSACTION; ALL_TARGET_HASHES_AND_ACLS_VERIFIED; BACKUPS_RETAINED",
     "stage_owner_fix": "CREATE_NEW_CURRENT_USER_OWNER_PARENT_DACL_INHERITANCE_EXACT_TARGET_BACKUP_ACL_CHECKS",
-    "real_transaction_scratch_status": "PENDING_NEW_ELEVATED_RUN_AFTER_FIX; CURRENT_EXECUTOR_TOKEN_ELEVATED_FALSE",
+    "real_transaction_scratch_status": "PASS_USER_RUN_ELEVATED; FIVE_TARGET_COMMIT_ROLLBACK_MISSING_TARGET_RESTORE_AND_ACL_CHECKS",
     "real_five_target_transaction_scratch": "PASS_USER_RUN_ELEVATED; COMMIT_ROLLBACK_MISSING_TARGET_RESTORE_AND_ALL_ACL_CHECKS_PASS",
-    "latest_windows_install": "UPDATED; FIVE_TARGETS_COMMITTED; SOURCE_HASHES_AND_V2_RECEIPT_BOUND; PERSISTENT_BACKUPS_RETAINED; ACL_UNCHANGED",
+    "latest_windows_install": "UPDATED; FIVE_TARGETS_COMMITTED; RECEIPT_AND_SOURCE_HASHES_BOUND; BACKUPS_RETAINED; ACLS_VERIFIED",
     "latest_transaction_scratch_diagnostic": "PASS; CONTROL_AND_JOURNAL_PARENT_ACLS_FILE_OWNER_DACLS_BACKUP_ACLS_AND_EXACT_PAIRS_VERIFIED",
     "runtime_selection_verified": false,
     "installed_sources_match_v2_receipt": true,
@@ -110,3 +110,4 @@
     "machine_path_sid_ip_key_token_and_known_workspace_hash_findings": 0
   }
 }
+
