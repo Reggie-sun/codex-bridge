@@ -6,7 +6,7 @@ Codex Bridge is a Windows named-pipe relay and strict app-server JSON-RPC gate i
 
 - Windows Codex CLI 0.160.0 and the older fixed-entry initialize/thread-start path were observed in a prior settled handshake: requested `fast`, native response `priority`. That run submitted no task and started no model turn. This is old-install evidence, not a test of the new selector.
 - This package adds an optional thread-start service-tier selector. The new selector has not been installed on Windows or runtime-tested. `default` is the default request; `fast` is an opt-in request.
-- The original Windows package reported 65 passing tests and two skipped tests. The Linux parent adapter is covered by the offline suite; Windows native child/Job Object tests are explicitly skipped on Linux. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
+- The combined package suite currently passes 110 tests; two are skipped (authorized Windows native integration and an omitted private diagnostic module). Windows native child/Job Object tests are not exercised by the fake suite. A prior real named-pipe ACL integration attempt was blocked by Access Denied in the restricted execution environment.
 - Native sandbox enforcement, protected-root unreadability, and current Linux-to-Windows cross-machine authentication are not established by these results.
 
 ## Design limits
@@ -19,7 +19,7 @@ The broker pins `gpt-6.1-sol` and reasoning effort `high`. `thread/start.service
 
 Copy `settings.example.json` to a private `settings.private.json` beside the broker only after replacing every placeholder. Store the workspace path and journal path in the local configuration; do not commit the private file or journal directory. The `app.py` hash is an explicit public-source binding for the sample code and must be computed for the intended public source tree.
 
-The config template is not an installer. The Windows private installer uses a journaled transaction for source files, settings, and receipt, and retains hash-verified backups. Before migrating settings, it requires the installed sources to match the existing private receipt, the old broker's pinned `app.py` hash to match the exact existing workspace, and the receipt workspace to match the private settings. It then adds only `workspace_source_sha256` and installs the byte-identical public broker. Migration rejects drift and preserves the existing workspace and journal-root values. This flow has offline fault-injection coverage; real Windows `ReplaceFileW` ACL behavior still needs an authorized integration check.
+The config template is not an installer. The Windows private installer uses a journaled transaction for source files, settings, and receipt, and retains hash-verified backups. Before migrating settings, it requires the installed sources to match the existing private receipt, the old broker's pinned `app.py` hash to match the exact existing workspace, and the receipt workspace to match the private settings. It then adds only `workspace_source_sha256` and installs the byte-identical public broker. Migration rejects drift and preserves the existing workspace and journal-root values. New transaction journals accept inherited ACLs only when their parent remains protected and the file has exactly current-user and SYSTEM full-control inherited ACEs. No existing ACL is rewritten. This flow has offline fault-injection coverage; real Windows `ReplaceFileW` ACL behavior still needs an authorized integration check.
 
 ## Development
 

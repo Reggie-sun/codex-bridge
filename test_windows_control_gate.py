@@ -14,6 +14,7 @@ import pytest
 
 from windows_control_gate import (BOUNDARIES, BoundedChild, DurableConsumptionJournal,
                                   ProtocolGate, Reject, WindowsControlProxy,
+                                  _inherited_private_acl_facts_valid,
                                   boundaries_digest_ok, diagnose_result_shape,
                                   parse_frame, parse_result)
 
@@ -23,6 +24,22 @@ JOB1 = "00000000-0000-4000-8000-000000000001"
 JOB2 = "00000000-0000-4000-8000-000000000002"
 CAPS = {"experimentalApi": False, "requestAttestation": False, "explicitGatewayOauth": True}
 CLIENT = {"name": "feige-parent", "title": "Feige project control", "version": "1"}
+
+
+def test_inherited_journal_acl_accepts_only_exact_user_system_inheritance():
+    user, system = "current-user-test", "SYSTEM"
+    expected = [(0, 0x10, 0x001F01FF, user), (0, 0x10, 0x001F01FF, system)]
+    assert _inherited_private_acl_facts_valid(user, user, False, expected, system)
+    invalid = [
+        (user, user, True, expected),
+        ("other-owner", user, False, expected),
+        (user, user, False, [*expected, (0, 0x10, 0x001F01FF, "other-user")]),
+        (user, user, False, [(0, 0x10, 0x001F01FF, user), (0, 0x10, 0x00120089, system)]),
+        (user, user, False, [(0, 0, 0x001F01FF, user), expected[1]]),
+        (user, user, False, [(1, 0x10, 0x001F01FF, user), expected[1]]),
+        (user, user, False, [expected[0], expected[0]]),
+    ]
+    assert all(not _inherited_private_acl_facts_valid(*case, system_sid=system) for case in invalid)
 
 
 def rpc(i, method, params):
