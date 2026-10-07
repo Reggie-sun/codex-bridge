@@ -18,12 +18,20 @@ class FakeOps:
         self.fail_after = None
         self.partial_move_at = None
         self.restore_missing_denied = False
+        self.fail_journal_acl = False
         self.fail_stage = False
 
     def read(self, path):
         return path.read_bytes()
 
+    def create_journal(self, path):
+        with path.open("xb") as stream:
+            stream.flush()
+        self.acls[path] = "existing-dacl"
+
     def verify_acl(self, path):
+        if self.fail_journal_acl and path.name.startswith("selector-txn-"):
+            raise RuntimeError("JOURNAL_ACL_REJECTED")
         if path.exists() and path.parent.name == "journals":
             self.acls.setdefault(path, "existing-dacl")
         if not path.exists() or self.acls.get(path) != "existing-dacl":
@@ -278,6 +286,30 @@ def test_restored_state_acl_mismatch_blocks_without_terminal_record():
     with pytest.raises(RuntimeError, match="RESTORED_STATE_ACL_VERIFICATION_FAILED"):
         tx.recover_existing(targets)
     assert [json.loads(line)["event"] for line in journal.read_text().splitlines()] == ["PREPARED"]
+
+
+def test_journal_owner_acl_failure_stops_before_prepared_or_target_writes():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    ops.fail_journal_acl = True
+    journal = unique_journal(journals, "owner-acl-rejected")
+    with pytest.raises(RuntimeError, match="TRANSACTION_JOURNAL_FILE_ACL_INVALID"):
+        tx.apply(targets, payloads, journal)
+    assert journal.exists() and journal.read_bytes() == b""
+    assert targets["a.py"].read_bytes() == b"old-a"
+    assert targets["receipt.json"].read_bytes() == b"old-r"
+    assert not list(journals.glob("selector-backup-*.bak"))
+
+
+def test_empty_unprepared_journal_is_preserved_and_does_not_block_recovery():
+    tx, ops, _control, journals, targets, _payloads = fixture()
+    journal = unique_journal(journals, "empty-unprepared")
+    journal.write_bytes(b"")
+    ops.acls[journal] = "existing-dacl"
+    before = journal.read_bytes()
+    assert tx.recover_existing(targets) == []
+    assert journal.read_bytes() == before == b""
+    assert targets["a.py"].read_bytes() == b"old-a"
+    assert targets["receipt.json"].read_bytes() == b"old-r"
 
 
 def test_unexpected_target_hash_fails_closed():
