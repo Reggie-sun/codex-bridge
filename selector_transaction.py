@@ -74,7 +74,8 @@ class SelectorTransaction:
                 prepared = next((record["manifest"] for record in records
                                  if record.get("event") == "PREPARED"), None)
                 terminal = any(record.get("event") in ("COMMITTED", "ROLLBACK_COMPLETE",
-                                                         "RESTORED_STATE_VERIFIED")
+                                                         "RESTORED_STATE_VERIFIED",
+                                                         "SUPERSEDED_BY_COMMITTED")
                                 for record in records)
             except Exception:
                 raise RuntimeError("TRANSACTION_JOURNAL_INVALID") from None
@@ -84,13 +85,21 @@ class SelectorTransaction:
                 continue
             names = [entry.get("name") for entry in prepared.get("entries", [])]
             if (prepared.get("schema") != "feige-selector-transaction/v1"
-                    or len(names) != len(targets) or set(names) != set(targets)
-                    or len(set(names)) != len(names)
+                    or not names or len(set(names)) != len(names)
                     or any(Path(entry.get("backup", "")).name != entry.get("backup")
                            or not entry.get("backup", "").startswith(
                                "selector-backup-" + str(prepared.get("transaction_id")) + "-")
                            for entry in prepared.get("entries", []))):
                 raise RuntimeError("TRANSACTION_JOURNAL_SCOPE_INVALID")
+            if len(names) != len(targets) or set(names) != set(targets):
+                # Completed transactions from a different, explicitly scoped
+                # repair are harmless history. An unresolved transaction that
+                # overlaps this scope cannot be recovered with a partial map.
+                if terminal:
+                    continue
+                if set(names) & set(targets):
+                    raise RuntimeError("TRANSACTION_JOURNAL_SCOPE_INVALID")
+                continue
             if terminal and any(record.get("event") == "RESTORED_STATE_VERIFIED"
                                 for record in records):
                 try:
@@ -100,6 +109,12 @@ class SelectorTransaction:
                         raise
                 continue
             if not terminal:
+                if self._committed_state_supersedes(prepared, targets, journal):
+                    self._append(journal, {"event": "SUPERSEDED_BY_COMMITTED",
+                                           "transaction_id": prepared["transaction_id"],
+                                           "target_count": len(targets)})
+                    recovered.append(str(journal))
+                    continue
                 if self._is_restored_state(prepared, targets):
                     self._append(journal, {"event": "RESTORED_STATE_VERIFIED",
                                            "transaction_id": prepared["transaction_id"],
@@ -333,3 +348,4 @@ class SelectorTransaction:
                 for stage in stages.values():
                     if stage.exists():
                         self.ops.unlink(stage)
+
