@@ -11,6 +11,7 @@ from typing import Protocol
 
 class TransactionOps(Protocol):
     def read(self, path: Path) -> bytes: ...
+    def create_journal(self, path: Path) -> None: ...
     def write_stage(self, path: Path, payload: bytes) -> None: ...
     def replace(self, target: Path, stage: Path, backup: Path) -> None: ...
     def restore_missing(self, target: Path, backup: Path) -> None: ...
@@ -27,6 +28,11 @@ class TransactionRecoveryFailed(RuntimeError):
         super().__init__(message)
         self.stage = stage
         self.win32_error = win32_error
+
+
+class TransactionJournalAclPreflightFailed(RuntimeError):
+    """A new empty journal failed ACL validation before PREPARED or target changes."""
+    pass
 
 
 def digest(data: bytes) -> str:
@@ -182,11 +188,13 @@ class SelectorTransaction:
             stages[name] = self.control_root / entry["stage"]
         manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": txid,
                     "entries": entries}
-        with journal.open("xb") as stream:
-            stream.flush()
-            os.fsync(stream.fileno())
-        self.ops.verify_acl(journal)
-        self.ops.flush_directory(self.journal_root)
+        self.ops.create_journal(journal)
+        try:
+            self.ops.verify_acl(journal)
+            self.ops.flush_directory(self.journal_root)
+        except Exception:
+            raise TransactionJournalAclPreflightFailed(
+                "TRANSACTION_JOURNAL_FILE_ACL_INVALID") from None
         self._append(journal, {"event": "PREPARED", "manifest": manifest})
         preserve_stages = False
         try:
