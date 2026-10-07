@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from selector_transaction import SelectorTransaction
+from selector_transaction import SelectorTransaction, TransactionRecoveryFailed
 
 
 class FakeOps:
@@ -16,6 +16,8 @@ class FakeOps:
         self.replace_count = 0
         self.fail_before = None
         self.fail_after = None
+        self.partial_move_at = None
+        self.restore_missing_denied = False
         self.fail_stage = False
 
     def read(self, path):
@@ -25,6 +27,10 @@ class FakeOps:
         if path.exists() and path.parent.name == "journals":
             self.acls.setdefault(path, "existing-dacl")
         if not path.exists() or self.acls.get(path) != "existing-dacl":
+            raise RuntimeError("ACL_NOT_PRESERVED")
+
+    def verify_same_acl(self, left, right):
+        if self.acls.get(left) != self.acls.get(right):
             raise RuntimeError("ACL_NOT_PRESERVED")
 
     def write_stage(self, path, payload):
@@ -48,6 +54,10 @@ class FakeOps:
             raise RuntimeError("INJECT_PRE_REPLACE_FAILURE")
         backup.write_bytes(target.read_bytes())
         self.acls[backup] = self.acls[target]
+        if self.partial_move_at == self.replace_count:
+            target.unlink()
+            self.acls.pop(target, None)
+            raise OSError(1177, "simulated")
         target.write_bytes(stage.read_bytes())
         # Models ReplaceFileW preserving the target DACL on the new file.
         self.acls[target] = self.acls[target]
@@ -59,6 +69,12 @@ class FakeOps:
     def unlink(self, path):
         path.unlink()
         self.acls.pop(path, None)
+
+    def restore_missing(self, target, backup):
+        if self.restore_missing_denied:
+            raise OSError(5, "simulated")
+        target.write_bytes(backup.read_bytes())
+        self.acls[target] = self.acls[backup]
 
 
 def fixture():
@@ -187,6 +203,83 @@ def test_torn_final_record_recovery_uses_hashes():
     assert targets["receipt.json"].read_bytes() == b"old-r"
 
 
+def test_partial_replace_disposition_restores_missing_target_from_bound_backup():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    journal = unique_journal(journals, "partial-move")
+    ops.partial_move_at = 2
+    with pytest.raises(OSError, match="simulated"):
+        tx.apply(targets, payloads, journal)
+    assert targets["a.py"].read_bytes() == b"old-a"
+    assert targets["receipt.json"].read_bytes() == b"old-r"
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert records[-1]["event"] == "ROLLBACK_COMPLETE"
+
+
+def test_denied_missing_target_restore_keeps_stage_and_backups():
+    tx, ops, control, journals, targets, payloads = fixture()
+    journal = unique_journal(journals, "partial-move-denied")
+    ops.partial_move_at = 2
+    ops.restore_missing_denied = True
+    with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
+        tx.apply(targets, payloads, journal)
+    assert not targets["receipt.json"].exists()
+    backup = next(journals.glob("selector-backup-*-receipt.json.bak"))
+    assert backup.read_bytes() == b"old-r"
+    stage = next(control.glob(".selector-stage-*-receipt.json"))
+    assert stage.read_bytes() == b"new-r"
+
+
+def test_all_old_hashes_and_exact_acls_mark_journal_restored_and_recheck_marker():
+    tx, ops, _control, journals, targets, _payloads = fixture()
+    journal = unique_journal(journals, "already-restored")
+    txid = uuid.uuid4().hex
+    entries = []
+    for name, target in targets.items():
+        old = target.read_bytes()
+        backup_name = f"selector-backup-{txid}-{name}.bak"
+        backup = journals / backup_name
+        backup.write_bytes(old)
+        ops.acls[backup] = ops.acls[target]
+        entries.append({"name": name, "old_sha256": hashlib.sha256(old).hexdigest(),
+                        "new_sha256": hashlib.sha256(b"new-" + name.encode()).hexdigest(),
+                        "backup": backup_name})
+    manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": txid,
+                "entries": entries}
+    journal.write_text(json.dumps({"event": "PREPARED", "manifest": manifest}) + "\n")
+    ops.acls[journal] = "existing-dacl"
+    assert tx.recover_existing(targets) == [str(journal)]
+    assert json.loads(journal.read_text().splitlines()[-1]) == {
+        "event": "RESTORED_STATE_VERIFIED", "transaction_id": txid,
+        "target_count": len(targets)}
+    before = journal.read_bytes()
+    assert tx.recover_existing(targets) == []
+    assert journal.read_bytes() == before
+
+
+def test_restored_state_acl_mismatch_blocks_without_terminal_record():
+    tx, ops, _control, journals, targets, _payloads = fixture()
+    journal = unique_journal(journals, "restored-acl-mismatch")
+    txid = uuid.uuid4().hex
+    entries = []
+    for name, target in targets.items():
+        old = target.read_bytes()
+        backup_name = f"selector-backup-{txid}-{name}.bak"
+        backup = journals / backup_name
+        backup.write_bytes(old)
+        ops.acls[backup] = ops.acls[target]
+        entries.append({"name": name, "old_sha256": hashlib.sha256(old).hexdigest(),
+                        "new_sha256": hashlib.sha256(b"new-" + name.encode()).hexdigest(),
+                        "backup": backup_name})
+    manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": txid,
+                "entries": entries}
+    journal.write_text(json.dumps({"event": "PREPARED", "manifest": manifest}) + "\n")
+    ops.acls[journal] = "existing-dacl"
+    ops.acls[targets["a.py"]] = "different-dacl"
+    with pytest.raises(RuntimeError, match="RESTORED_STATE_ACL_VERIFICATION_FAILED"):
+        tx.recover_existing(targets)
+    assert [json.loads(line)["event"] for line in journal.read_text().splitlines()] == ["PREPARED"]
+
+
 def test_unexpected_target_hash_fails_closed():
     tx, _ops, _control, journals, targets, payloads = fixture()
     journal = journals / f"selector-txn-unknown-target-{uuid.uuid4().hex}.jsonl"
@@ -202,5 +295,6 @@ def test_unexpected_target_hash_fails_closed():
             changed = True
 
     tx._append = alter_after_prepare
-    with pytest.raises(RuntimeError, match="TARGET_CHANGED_AFTER_PREFLIGHT|RECOVERY_TARGET_HASH_UNKNOWN"):
+    with pytest.raises(TransactionRecoveryFailed, match="TRANSACTION_RECOVERY_INCOMPLETE"):
         tx.apply(targets, payloads, journal)
+
