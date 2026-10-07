@@ -1,0 +1,14 @@
+[project]
+name = "codex-bridge"
+version = "0.1.0"
+description = "Restricted Windows named-pipe bridge for Codex app-server"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+markers = ["windows_integration: requires real Windows named-pipe and ACL access"]
