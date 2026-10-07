@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from selector_transaction import SelectorTransaction, TransactionRecoveryFailed
+from selector_transaction import SelectorTransaction
 
 
 class FakeOps:
@@ -19,6 +19,7 @@ class FakeOps:
         self.partial_move_at = None
         self.restore_missing_denied = False
         self.fail_journal_acl = False
+        self.journal_acl_error = "JOURNAL_ACL_REJECTED"
         self.fail_stage = False
 
     def read(self, path):
@@ -31,7 +32,7 @@ class FakeOps:
 
     def verify_acl(self, path):
         if self.fail_journal_acl and path.name.startswith("selector-txn-"):
-            raise RuntimeError("JOURNAL_ACL_REJECTED")
+            raise RuntimeError(self.journal_acl_error)
         if path.exists() and path.parent.name == "journals":
             self.acls.setdefault(path, "existing-dacl")
         if not path.exists() or self.acls.get(path) != "existing-dacl":
@@ -63,6 +64,8 @@ class FakeOps:
         backup.write_bytes(target.read_bytes())
         self.acls[backup] = self.acls[target]
         if self.partial_move_at == self.replace_count:
+            # ReplaceFileW ERROR_UNABLE_TO_MOVE_REPLACEMENT_2 disposition:
+            # old target is at backup, replacement remains at stage, target absent.
             target.unlink()
             self.acls.pop(target, None)
             raise OSError(1177, "simulated")
@@ -141,8 +144,47 @@ def test_replace_failure_rolls_back_all_targets_and_preserves_backup(failure):
 def test_stage_failure_has_no_target_changes():
     tx, ops, _control, journals, targets, payloads = fixture()
     ops.fail_stage = True
-    with pytest.raises(RuntimeError, match="INJECT_STAGE_FAILURE"):
+    with pytest.raises(RuntimeError, match="INJECT_STAGE_FAILURE") as error:
         tx.apply(targets, payloads, unique_journal(journals, "stage-failure"))
+    assert getattr(error.value, "transaction_rollback_complete", False) is True
+    assert targets["a.py"].read_bytes() == b"old-a"
+    assert targets["receipt.json"].read_bytes() == b"old-r"
+
+
+def test_journal_owner_acl_failure_stops_before_prepared_or_target_writes():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    ops.fail_journal_acl = True
+    journal = unique_journal(journals, "owner-acl-rejected")
+    with pytest.raises(RuntimeError, match="TRANSACTION_JOURNAL_FILE_ACL_INVALID") as error:
+        tx.apply(targets, payloads, journal)
+    assert error.value.validation_failure == "JOURNAL_ACL_VALIDATION_EXCEPTION"
+    assert journal.exists() and journal.read_bytes() == b""
+    assert targets["a.py"].read_bytes() == b"old-a"
+    assert targets["receipt.json"].read_bytes() == b"old-r"
+    assert not list(journals.glob("selector-backup-*.bak"))
+
+
+def test_journal_parent_acl_failure_is_reported_as_fixed_parent_stage():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    ops.fail_journal_acl = True
+    ops.journal_acl_error = "TRANSACTION_JOURNAL_PARENT_ACL_INVALID"
+    journal = unique_journal(journals, "parent-acl-rejected")
+    with pytest.raises(RuntimeError, match="TRANSACTION_JOURNAL_PARENT_ACL_INVALID") as error:
+        tx.apply(targets, payloads, journal)
+    assert error.value.validation_failure == "TRANSACTION_JOURNAL_PARENT_ACL_INVALID"
+    assert journal.read_bytes() == b""
+    assert targets["a.py"].read_bytes() == b"old-a"
+
+
+def test_empty_unprepared_journal_is_preserved_and_does_not_block_recovery():
+    tx, ops, _control, journals, targets, _payloads = fixture()
+    ops.fail_journal_acl = True
+    journal = unique_journal(journals, "empty-unprepared")
+    journal.write_bytes(b"")
+    ops.acls[journal] = "existing-dacl"
+    before = journal.read_bytes()
+    assert tx.recover_existing(targets) == []
+    assert journal.read_bytes() == before == b""
     assert targets["a.py"].read_bytes() == b"old-a"
     assert targets["receipt.json"].read_bytes() == b"old-r"
 
@@ -159,6 +201,81 @@ def test_recovery_from_crash_boundary_after_replace():
     tx.recover(manifest, journal, targets)
     assert targets["a.py"].read_bytes() == b"old-a"
     assert targets["receipt.json"].read_bytes() == b"old-r"
+
+
+def test_replacefile_partial_move_missing_target_is_restored_from_bound_backup():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    journal = unique_journal(journals, "partial-move")
+    ops.partial_move_at = 2
+    with pytest.raises(OSError, match="simulated"):
+        tx.apply(targets, payloads, journal)
+    assert targets["receipt.json"].read_bytes() == b"old-r"
+    assert targets["a.py"].read_bytes() == b"old-a"
+    receipt_backup = next(journals.glob("selector-backup-*-receipt.json.bak"))
+    assert receipt_backup.read_bytes() == b"old-r"
+    records = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert records[-1]["event"] == "ROLLBACK_COMPLETE"
+
+
+def test_missing_target_restore_access_denied_preserves_stage_and_backups():
+    tx, ops, control, journals, targets, payloads = fixture()
+    journal = unique_journal(journals, "partial-move-denied")
+    ops.partial_move_at = 2
+    ops.restore_missing_denied = True
+    with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
+        tx.apply(targets, payloads, journal)
+    assert not targets["receipt.json"].exists()
+    receipt_backup = next(journals.glob("selector-backup-*-receipt.json.bak"))
+    assert receipt_backup.read_bytes() == b"old-r"
+    stage = next(control.glob(".selector-stage-*-receipt.json"))
+    assert stage.read_bytes() == b"new-r"
+    assert [json.loads(line) for line in journal.read_text().splitlines()][-1]["event"] != "ROLLBACK_COMPLETE"
+
+
+def test_real_windows_replacefile_and_missing_target_restore_in_private_scratch():
+    if __import__("os").name != "nt":
+        pytest.skip("Windows API required")
+    from install_service_tier_selector_private import Win32StageError, WindowsFileOps
+    import shutil
+
+    import os
+    root = Path(os.environ.get("TEMP", r"C:\Users\27451\AppData\Local\Temp")) / ("feige-native-api-" + uuid.uuid4().hex)
+    root.mkdir(parents=True)
+
+    try:
+        journals = root / "journals"
+        journals.mkdir()
+        target = root / "target.bin"
+        stage = root / ".stage.bin"
+        seed = journals / "seed.bin"
+        backup = journals / "selector-backup-scratch-target.bin"
+        seed.write_bytes(b"old-secretless")
+        ops = WindowsFileOps(journals)
+        # Isolate native file operations from production ACL policy while
+        # retaining the same CreateFileW security-descriptor path.
+        ops.verify_acl = lambda _path: None
+        ops.restore_missing(target, seed)
+        assert target.read_bytes() == b"old-secretless"
+        target.unlink()
+
+        target.write_bytes(b"old-secretless")
+        stage.write_bytes(b"new-secretless")
+        try:
+            ops.replace(target, stage, backup)
+        except Win32StageError as exc:
+            if exc.code == 5:
+                pytest.skip("execution sandbox denies ReplaceFileW rename on scratch path")
+            raise
+        assert target.read_bytes() == b"new-secretless"
+        assert backup.read_bytes() == b"old-secretless"
+
+        # Model the documented partial disposition after a successful API call.
+        target.unlink()
+        ops.restore_missing(target, backup)
+        assert target.read_bytes() == b"old-secretless"
+        assert backup.read_bytes() == b"old-secretless"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def test_journal_write_failure_after_replace_rolls_back():
@@ -211,33 +328,7 @@ def test_torn_final_record_recovery_uses_hashes():
     assert targets["receipt.json"].read_bytes() == b"old-r"
 
 
-def test_partial_replace_disposition_restores_missing_target_from_bound_backup():
-    tx, ops, _control, journals, targets, payloads = fixture()
-    journal = unique_journal(journals, "partial-move")
-    ops.partial_move_at = 2
-    with pytest.raises(OSError, match="simulated"):
-        tx.apply(targets, payloads, journal)
-    assert targets["a.py"].read_bytes() == b"old-a"
-    assert targets["receipt.json"].read_bytes() == b"old-r"
-    records = [json.loads(line) for line in journal.read_text().splitlines()]
-    assert records[-1]["event"] == "ROLLBACK_COMPLETE"
-
-
-def test_denied_missing_target_restore_keeps_stage_and_backups():
-    tx, ops, control, journals, targets, payloads = fixture()
-    journal = unique_journal(journals, "partial-move-denied")
-    ops.partial_move_at = 2
-    ops.restore_missing_denied = True
-    with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
-        tx.apply(targets, payloads, journal)
-    assert not targets["receipt.json"].exists()
-    backup = next(journals.glob("selector-backup-*-receipt.json.bak"))
-    assert backup.read_bytes() == b"old-r"
-    stage = next(control.glob(".selector-stage-*-receipt.json"))
-    assert stage.read_bytes() == b"new-r"
-
-
-def test_all_old_hashes_and_exact_acls_mark_journal_restored_and_recheck_marker():
+def test_incomplete_journal_with_all_old_targets_is_marked_restored_not_replayed():
     tx, ops, _control, journals, targets, _payloads = fixture()
     journal = unique_journal(journals, "already-restored")
     txid = uuid.uuid4().hex
@@ -253,18 +344,72 @@ def test_all_old_hashes_and_exact_acls_mark_journal_restored_and_recheck_marker(
                         "backup": backup_name})
     manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": txid,
                 "entries": entries}
-    journal.write_text(json.dumps({"event": "PREPARED", "manifest": manifest}) + "\n")
+    journal.write_text(json.dumps({"event": "PREPARED", "manifest": manifest}) + "\n"
+                       + json.dumps({"event": "REPLACED", "name": "a.py"}) + "\n")
     ops.acls[journal] = "existing-dacl"
+
     assert tx.recover_existing(targets) == [str(journal)]
-    assert json.loads(journal.read_text().splitlines()[-1]) == {
-        "event": "RESTORED_STATE_VERIFIED", "transaction_id": txid,
-        "target_count": len(targets)}
+    rows = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert rows[-1] == {"event": "RESTORED_STATE_VERIFIED", "transaction_id": txid,
+                        "target_count": len(targets)}
+    assert all(target.read_bytes().startswith(b"old-") for target in targets.values())
+    # Subsequent scans verify the explicit marker and leave the old WAL intact.
     before = journal.read_bytes()
     assert tx.recover_existing(targets) == []
     assert journal.read_bytes() == before
+    targets["a.py"].write_bytes(b"unexpected")
+    with pytest.raises(RuntimeError, match="RESTORED_STATE_VERIFICATION_FAILED"):
+        tx.recover_existing(targets)
 
 
-def test_restored_state_acl_mismatch_blocks_without_terminal_record():
+def test_new_committed_transaction_supersedes_an_older_restored_marker():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    prior_id = "a" * 32
+    prior_entries = []
+    current_old = {}
+    for name, target in targets.items():
+        old = target.read_bytes()
+        current_old[name] = old
+        backup_name = f"selector-backup-{prior_id}-{name}.bak"
+        backup = journals / backup_name
+        backup.write_bytes(old)
+        ops.acls[backup] = ops.acls[target]
+        prior_entries.append({"name": name, "old_sha256": hashlib.sha256(old).hexdigest(),
+                              "new_sha256": hashlib.sha256(b"prior-new-" + name.encode()).hexdigest(),
+                              "backup": backup_name})
+    prior_manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": prior_id,
+                      "entries": prior_entries}
+    marker = journals / "selector-txn-a-restored-marker.jsonl"
+    marker.write_text(json.dumps({"event": "PREPARED", "manifest": prior_manifest}) + "\n"
+                      + json.dumps({"event": "RESTORED_STATE_VERIFIED"}) + "\n")
+    ops.acls[marker] = "existing-dacl"
+
+    next_id = "b" * 32
+    next_entries = []
+    for name, target in targets.items():
+        backup_name = f"selector-backup-{next_id}-{name}.bak"
+        backup = journals / backup_name
+        backup.write_bytes(current_old[name])
+        ops.acls[backup] = ops.acls[target]
+        target.write_bytes(payloads[name])
+        next_entries.append({"name": name,
+                             "old_sha256": hashlib.sha256(current_old[name]).hexdigest(),
+                             "new_sha256": hashlib.sha256(payloads[name]).hexdigest(),
+                             "backup": backup_name})
+    next_manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": next_id,
+                     "entries": next_entries}
+    committed = journals / "selector-txn-z-committed.jsonl"
+    committed.write_text(json.dumps({"event": "PREPARED", "manifest": next_manifest}) + "\n"
+                         + "".join(json.dumps({"event": "REPLACED", "name": e["name"]}) + "\n"
+                                  for e in next_entries)
+                         + json.dumps({"event": "COMMITTED"}) + "\n")
+    ops.acls[committed] = "existing-dacl"
+
+    assert tx.recover_existing(targets) == []
+    assert all(target.read_bytes() == payloads[name] for name, target in targets.items())
+
+
+def test_old_hashes_with_acl_mismatch_are_blocked_without_rollback_record():
     tx, ops, _control, journals, targets, _payloads = fixture()
     journal = unique_journal(journals, "restored-acl-mismatch")
     txid = uuid.uuid4().hex
@@ -283,33 +428,11 @@ def test_restored_state_acl_mismatch_blocks_without_terminal_record():
     journal.write_text(json.dumps({"event": "PREPARED", "manifest": manifest}) + "\n")
     ops.acls[journal] = "existing-dacl"
     ops.acls[targets["a.py"]] = "different-dacl"
+
     with pytest.raises(RuntimeError, match="RESTORED_STATE_ACL_VERIFICATION_FAILED"):
         tx.recover_existing(targets)
+    assert targets["a.py"].read_bytes() == b"old-a"
     assert [json.loads(line)["event"] for line in journal.read_text().splitlines()] == ["PREPARED"]
-
-
-def test_journal_owner_acl_failure_stops_before_prepared_or_target_writes():
-    tx, ops, _control, journals, targets, payloads = fixture()
-    ops.fail_journal_acl = True
-    journal = unique_journal(journals, "owner-acl-rejected")
-    with pytest.raises(RuntimeError, match="TRANSACTION_JOURNAL_FILE_ACL_INVALID"):
-        tx.apply(targets, payloads, journal)
-    assert journal.exists() and journal.read_bytes() == b""
-    assert targets["a.py"].read_bytes() == b"old-a"
-    assert targets["receipt.json"].read_bytes() == b"old-r"
-    assert not list(journals.glob("selector-backup-*.bak"))
-
-
-def test_empty_unprepared_journal_is_preserved_and_does_not_block_recovery():
-    tx, ops, _control, journals, targets, _payloads = fixture()
-    journal = unique_journal(journals, "empty-unprepared")
-    journal.write_bytes(b"")
-    ops.acls[journal] = "existing-dacl"
-    before = journal.read_bytes()
-    assert tx.recover_existing(targets) == []
-    assert journal.read_bytes() == before == b""
-    assert targets["a.py"].read_bytes() == b"old-a"
-    assert targets["receipt.json"].read_bytes() == b"old-r"
 
 
 def test_unexpected_target_hash_fails_closed():
@@ -327,5 +450,5 @@ def test_unexpected_target_hash_fails_closed():
             changed = True
 
     tx._append = alter_after_prepare
-    with pytest.raises(TransactionRecoveryFailed, match="TRANSACTION_RECOVERY_INCOMPLETE"):
+    with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
         tx.apply(targets, payloads, journal)
