@@ -1214,4 +1214,9 @@ def diagnose_result_shape(raw: str, metrics: dict[str, str]) -> dict[str, Any]:
     elif not result["schema_value_match"]:
         result["diagnostic_code"] = "FINAL_SCHEMA_VALUE_INVALID"
     elif not result["status_reason_relation_valid"]:
-        result["diagnos
+        result["diagnostic_code"] = "FINAL_STATUS_REASON_INVALID"
+    elif not result["metrics_object"] or not result["metrics_field_set_exact"]:
+        result["diagnostic_code"] = "FINAL_METRICS_FIELD_SET_INVALID"
+    elif not result["metric_types_valid"]:
+        result["diagnostic_code"] = "FINAL_METRIC_TYPE_INVALID"
+    return result
