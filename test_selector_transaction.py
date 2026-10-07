@@ -123,6 +123,60 @@ def test_success_leaves_hash_verified_persistent_backups_and_journal():
     assert all("target" not in item for item in prepared["entries"])
 
 
+def test_incomplete_transaction_superseded_by_later_verified_commit_is_settled_not_rolled_back():
+    tx, ops, _control, journals, targets, payloads = fixture()
+    old_bytes = {name: path.read_bytes() for name, path in targets.items()}
+    txid = "a" * 32
+    entries = []
+    for name, target in targets.items():
+        backup_name = f"selector-backup-{txid}-{name}.bak"
+        entries.append({"name": name, "old_sha256": hashlib.sha256(old_bytes[name]).hexdigest(),
+                        "new_sha256": hashlib.sha256(payloads[name]).hexdigest(),
+                        "backup": backup_name, "stage": f".selector-stage-{txid}-{name}"})
+        backup = journals / backup_name
+        backup.write_bytes(old_bytes[name])
+        ops.acls[backup] = ops.acls[target]
+        target.write_bytes(payloads[name])
+    manifest = {"schema": "feige-selector-transaction/v1", "transaction_id": txid,
+                "entries": entries}
+    incomplete = unique_journal(journals, "a-incomplete")
+    tx._append(incomplete, {"event": "PREPARED", "manifest": manifest})
+    tx._append(incomplete, {"event": "REPLACED", "name": entries[0]["name"]})
+
+    committed_id = "b" * 32
+    committed_entries = []
+    for entry in entries:
+        backup_name = f"selector-backup-{committed_id}-{entry['name']}.bak"
+        backup = journals / backup_name
+        backup.write_bytes(old_bytes[entry["name"]])
+        ops.acls[backup] = ops.acls[targets[entry["name"]]]
+        committed_entries.append({**entry, "backup": backup_name})
+    committed = {"schema": "feige-selector-transaction/v1", "transaction_id": committed_id,
+                 "entries": committed_entries}
+    later = unique_journal(journals, "z-committed")
+    tx._append(later, {"event": "PREPARED", "manifest": committed})
+    for entry in entries:
+        tx._append(later, {"event": "REPLACED", "name": entry["name"]})
+    tx._append(later, {"event": "COMMITTED"})
+
+    recovered = tx.recover_existing(targets)
+    assert str(incomplete) in recovered
+    assert {name: path.read_bytes() for name, path in targets.items()} == payloads
+    assert json.loads(incomplete.read_text().splitlines()[-1])["event"] == "SUPERSEDED_BY_COMMITTED"
+
+
+def test_terminal_transaction_with_different_scope_is_ignored_by_future_full_scan():
+    tx, ops, control, journals, targets, payloads = fixture()
+    assert tx.apply(targets, payloads, unique_journal(journals, "narrow"))
+    extra = control / "extra.py"
+    extra.write_bytes(b"extra")
+    ops.acls[extra] = ops.acls[targets["a.py"]]
+    full_scope = {**targets, "extra.py": extra}
+    assert tx.recover_existing(full_scope) == []
+    assert targets["a.py"].read_bytes() == payloads["a.py"]
+    assert extra.read_bytes() == b"extra"
+
+
 @pytest.mark.parametrize("failure", ["before_second", "after_second"])
 def test_replace_failure_rolls_back_all_targets_and_preserves_backup(failure):
     tx, ops, _control, journals, targets, payloads = fixture()
