@@ -19,7 +19,7 @@ The broker pins `gpt-6.1-sol` and reasoning effort `high`. `thread/start.service
 
 Copy `settings.example.json` to a private `settings.private.json` beside the broker only after replacing every placeholder. Store the workspace path and journal path in the local configuration; do not commit the private file or journal directory. The `app.py` hash is an explicit public-source binding for the sample code and must be computed for the intended public source tree.
 
-The config template is not an installer. The Windows private installer must also preserve the existing file ACLs, keep durable backups, and use its recovery journal. Do not use the unfinished local installer until its Windows integration and offline fault-injection tests pass.
+The config template is not an installer. The Windows private installer uses a journaled transaction for source files, settings, and receipt, and retains hash-verified backups. Before migrating settings, it requires the installed sources to match the existing private receipt, the old broker's pinned `app.py` hash to match the exact existing workspace, and the receipt workspace to match the private settings. It then adds only `workspace_source_sha256` and installs the byte-identical public broker. Migration rejects drift and preserves the existing workspace and journal-root values. This flow has offline fault-injection coverage; real Windows `ReplaceFileW` ACL behavior still needs an authorized integration check.
 
 ## Development
 
@@ -76,12 +76,15 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 
 ## Deployment pending
 
-1. On Windows, verify installer ownership, ACL preservation/rollback and real
-   `ReplaceFileW` integration before installing the selector; fake transaction
-   tests alone do not authorize installation.
-2. Compare the currently installed entry/broker/gate bytes (including newer entry
-   diagnostics) with this public package. Reconcile differences rather than
-   overwriting them with stale copies; preserve backups and all consumed journals.
+1. On Windows, run the private helper only after its read-only owner/ACL/source
+   preflight passes. It fails closed on source, workspace, or receipt drift and
+   uses `ReplaceFileW` with flags zero, retained backups, and rollback journal.
+   The real Windows ACL-preservation path remains untested until an authorized
+   local run.
+2. The helper installs the broker, entry, and gate from the source hashes in
+   `PUBLIC_BUILD.json`. It transactionally migrates only the private workspace
+   hash field after proving it equals the old installed broker pin and the existing
+   `app.py` bytes; all other private settings remain unchanged.
 3. After an authorized local install/reload, privately deliver the full updated v2
    receipt with exact installed source bindings. Existing Linux/USB receipts are
    not a current-selector deployment proof.
