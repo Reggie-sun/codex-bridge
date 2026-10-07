@@ -13,10 +13,20 @@ class TransactionOps(Protocol):
     def read(self, path: Path) -> bytes: ...
     def write_stage(self, path: Path, payload: bytes) -> None: ...
     def replace(self, target: Path, stage: Path, backup: Path) -> None: ...
+    def restore_missing(self, target: Path, backup: Path) -> None: ...
     def verify_acl(self, path: Path) -> None: ...
+    def verify_same_acl(self, left: Path, right: Path) -> None: ...
     def flush_file(self, path: Path) -> None: ...
     def flush_directory(self, path: Path) -> None: ...
     def unlink(self, path: Path) -> None: ...
+
+
+class TransactionRecoveryFailed(RuntimeError):
+    """A failed rollback that must leave staged recovery material intact."""
+    def __init__(self, message: str, stage: str = "RECOVERY", win32_error: int | None = None):
+        super().__init__(message)
+        self.stage = stage
+        self.win32_error = win32_error
 
 
 def digest(data: bytes) -> str:
@@ -50,8 +60,9 @@ class SelectorTransaction:
                 records = [json.loads(line) for line in lines]
                 prepared = next((record["manifest"] for record in records
                                  if record.get("event") == "PREPARED"), None)
-                terminal = any(record.get("event") in ("COMMITTED", "ROLLBACK_COMPLETE")
-                               for record in records)
+                terminal = any(record.get("event") in ("COMMITTED", "ROLLBACK_COMPLETE",
+                                                         "RESTORED_STATE_VERIFIED")
+                                for record in records)
             except Exception:
                 raise RuntimeError("TRANSACTION_JOURNAL_INVALID") from None
             if prepared is None:
@@ -67,24 +78,73 @@ class SelectorTransaction:
                                "selector-backup-" + str(prepared.get("transaction_id")) + "-")
                            for entry in prepared.get("entries", []))):
                 raise RuntimeError("TRANSACTION_JOURNAL_SCOPE_INVALID")
+            if terminal and any(record.get("event") == "RESTORED_STATE_VERIFIED"
+                                for record in records):
+                self._verify_restored_state(prepared, targets)
+                continue
             if not terminal:
-                self.recover(prepared, journal, targets)
+                if self._is_restored_state(prepared, targets):
+                    self._append(journal, {"event": "RESTORED_STATE_VERIFIED",
+                                           "transaction_id": prepared["transaction_id"],
+                                           "target_count": len(targets)})
+                else:
+                    self.recover(prepared, journal, targets)
                 recovered.append(str(journal))
         return recovered
+
+    def _verify_restored_state(self, manifest: dict, targets: dict[str, Path]) -> None:
+        try:
+            verified = self._is_restored_state(manifest, targets)
+        except Exception:
+            raise RuntimeError("RESTORED_STATE_VERIFICATION_FAILED") from None
+        if not verified:
+            raise RuntimeError("RESTORED_STATE_VERIFICATION_FAILED")
+
+    def _is_restored_state(self, manifest: dict, targets: dict[str, Path]) -> bool:
+        """Recognize a completed prior rollback only from bound old hashes and ACLs."""
+        entries = manifest.get("entries", [])
+        if len(entries) != len(targets) or {e.get("name") for e in entries} != set(targets):
+            return False
+        verify_same_acl = getattr(self.ops, "verify_same_acl", None)
+        if verify_same_acl is None:
+            return False
+        for entry in entries:
+            target = targets[entry["name"]]
+            backup = self.journal_root / entry["backup"]
+            if (not target.is_file() or not backup.is_file()
+                    or digest(self.ops.read(target)) != entry["old_sha256"]
+                    or digest(self.ops.read(backup)) != entry["old_sha256"]):
+                return False
+            try:
+                self.ops.verify_acl(target)
+                self.ops.verify_acl(backup)
+                verify_same_acl(target, backup)
+            except Exception:
+                raise RuntimeError("RESTORED_STATE_ACL_VERIFICATION_FAILED") from None
+        return True
 
     def recover(self, manifest: dict, journal: Path, targets: dict[str, Path]) -> None:
         txid = manifest["transaction_id"]
         for entry in reversed(manifest["entries"]):
             target = targets[entry["name"]]
-            current = digest(self.ops.read(target))
+            current = digest(self.ops.read(target)) if target.exists() else None
             if current == entry["old_sha256"]:
                 continue
-            if current != entry["new_sha256"]:
+            if current is not None and current != entry["new_sha256"]:
                 raise RuntimeError("RECOVERY_TARGET_HASH_UNKNOWN")
             backup = self.journal_root / entry["backup"]
             old_bytes = self.ops.read(backup)
             if digest(old_bytes) != entry["old_sha256"]:
                 raise RuntimeError("RECOVERY_BACKUP_HASH_MISMATCH")
+            if current is None:
+                self.ops.restore_missing(target, backup)
+                self.ops.flush_file(target)
+                self.ops.flush_directory(target.parent)
+                if digest(self.ops.read(target)) != entry["old_sha256"]:
+                    raise RuntimeError("ROLLBACK_HASH_MISMATCH")
+                self.ops.verify_acl(target)
+                self._append(journal, {"event": "ROLLED_BACK", "name": entry["name"]})
+                continue
             stage = self.control_root / (".selector-restore-" + txid + "-" + entry["name"])
             displaced = self.journal_root / ("selector-displaced-" + txid + "-" + entry["name"])
             self.ops.write_stage(stage, old_bytes)
@@ -128,6 +188,7 @@ class SelectorTransaction:
         self.ops.verify_acl(journal)
         self.ops.flush_directory(self.journal_root)
         self._append(journal, {"event": "PREPARED", "manifest": manifest})
+        preserve_stages = False
         try:
             for entry in entries:
                 name = entry["name"]
@@ -160,12 +221,26 @@ class SelectorTransaction:
             return {"transaction_id": txid, "journal": str(journal),
                     "backups": [str(self.journal_root / e["backup"]) for e in entries],
                     "new_hashes": {e["name"]: e["new_sha256"] for e in entries}}
-        except Exception:
+        except Exception as operation_error:
             # Inspect all targets, including the file whose ReplaceFile call may
             # have completed just before an exception/crash boundary.
-            self.recover(manifest, journal, targets)
-            raise
+            try:
+                self.recover(manifest, journal, targets)
+            except Exception as recovery_error:
+                # A missing/unknown target can mean ReplaceFileW left the
+                # replacement under its stage name. Preserve those bytes for
+                # an explicitly coordinated recovery; never erase them here.
+                preserve_stages = True
+                code = getattr(recovery_error, "code", None)
+                stage_name = getattr(recovery_error, "stage", "RECOVERY")
+                raise TransactionRecoveryFailed(
+                    "TRANSACTION_RECOVERY_INCOMPLETE", stage_name, code) from None
+            raise operation_error
         finally:
-            for stage in stages.values():
-                if stage.exists():
-                    self.ops.unlink(stage)
+            # Failed rollback may need the staged replacement to restore a
+            # missing target. Successful commit/rollback still removes debris.
+            if not preserve_stages:
+                for stage in stages.values():
+                    if stage.exists():
+                        self.ops.unlink(stage)
+
