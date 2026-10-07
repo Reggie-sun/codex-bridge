@@ -235,7 +235,8 @@ def test_missing_target_restore_access_denied_preserves_stage_and_backups():
 def test_real_windows_replacefile_and_missing_target_restore_in_private_scratch():
     if __import__("os").name != "nt":
         pytest.skip("Windows API required")
-    from install_service_tier_selector_private import Win32StageError, WindowsFileOps
+    installer = pytest.importorskip("install_service_tier_selector_private")
+    Win32StageError, WindowsFileOps = installer.Win32StageError, installer.WindowsFileOps
     import shutil
 
     import os
@@ -452,3 +453,4 @@ def test_unexpected_target_hash_fails_closed():
     tx._append = alter_after_prepare
     with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
         tx.apply(targets, payloads, journal)
+
