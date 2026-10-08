@@ -147,6 +147,70 @@ def test_tool_item_and_second_distinct_task_on_same_thread():
     assert gate.turn_id == "turn-2"
 
 
+@pytest.mark.parametrize("prior_state", ["COMPLETED", "OUTCOME_UNKNOWN"])
+def test_consumed_duplicate_emits_fixed_correlated_error_without_mutating_record(prior_state):
+    import hashlib
+
+    prompt = "same already consumed public task"
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    row = {"state": prior_state, "prompt_sha256": digest, "job_id": JOB1}
+
+    class Journal:
+        def record_unknown(self, text, job_id, sandbox):
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() == digest:
+                raise Reject("TASK_ALREADY_CONSUMED")
+            raise AssertionError("unexpected task body")
+
+    class Child:
+        sent = []
+        def send(self, message):
+            self.sent.append(message)
+
+    output = io.BytesIO()
+    proxy = WindowsControlProxy(["unused"], WORKSPACE, "unused", io.BytesIO(), output,
+                                journal_override=Journal())
+    proxy.gate = ready_gate()
+    proxy.child = Child()
+    request = rpc(7, "turn/start", turn_params(proxy.gate, prompt, JOB2))
+    with pytest.raises(Reject, match="TASK_ALREADY_CONSUMED"):
+        proxy._forward_parent(request)
+    proxy._remember_error("TASK_ALREADY_CONSUMED")
+    proxy._write_rejection(request["id"], "TASK_ALREADY_CONSUMED")
+    response = json.loads(proxy.write_queue.get_nowait())
+    assert response == {"id": 7, "error": {"code": -32000, "message": "TASK_ALREADY_CONSUMED"}}
+    assert proxy.child.sent == []
+    assert row == {"state": prior_state, "prompt_sha256": digest, "job_id": JOB1}
+
+
+def test_first_diagnostic_wins_over_later_eof_and_cleanup_errors():
+    proxy = WindowsControlProxy(["unused"], WORKSPACE, "unused", io.BytesIO(), io.BytesIO(),
+                                journal_override=object())
+    assert proxy._remember_error("TASK_ALREADY_CONSUMED") == "TASK_ALREADY_CONSUMED"
+    assert proxy._remember_error("NATIVE_EOF") == "TASK_ALREADY_CONSUMED"
+    assert proxy._remember_error("raw private exception text") == "TASK_ALREADY_CONSUMED"
+
+
+def test_uncorrelated_parent_eof_produces_no_fabricated_rpc_response():
+    output = io.BytesIO()
+    proxy = WindowsControlProxy(["unused"], WORKSPACE, "unused", io.BytesIO(), output,
+                                journal_override=object())
+    proxy._read_parent()
+    assert proxy.events.get_nowait() == ("parent_eof", None)
+    assert output.getvalue() == b""
+
+
+def test_native_rpc_error_is_replaced_with_fixed_message():
+    output = io.BytesIO()
+    proxy = WindowsControlProxy(["unused"], WORKSPACE, "unused", io.BytesIO(), output,
+                                journal_override=object())
+    proxy.pending_rpc[3] = "thread/start"
+    with pytest.raises(Reject, match="NATIVE_RPC_FAILED"):
+        proxy._native_message({"id": 3, "error": {"code": -1, "message": "private payload"}})
+    response = json.loads(proxy.write_queue.get_nowait())
+    assert response == {"id": 3, "error": {"code": -32000, "message": "NATIVE_RPC_FAILED"}}
+    assert "private payload" not in json.dumps(response)
+
+
 def test_plain_text_final_completes_without_json_result_schema():
     gate = ready_gate()
     params = turn_params(gate)

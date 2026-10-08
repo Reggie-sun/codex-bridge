@@ -20,6 +20,22 @@ The gate rejects other methods, account/config operations, shell requests, threa
 
 The broker records task consumption before forwarding `turn/start`. A result is settled only when the matching final message and matching `turn/completed` are received. An interrupt acknowledgement does not settle a turn. Unknown outcomes are never replayed automatically.
 
+## Fixed correlated rejections
+
+When a parsed request is rejected before a native response, the gate may return
+`{"id":<request-id>,"error":{"code":-32000,"message":"<FIXED_CODE>"}}`.
+The envelope contains no exception text, task text, native error payload, or
+diagnostic data. The Linux adapter accepts only a matching request ID, this exact
+shape, code `-32000`, and a documented fixed code. A rejection is never a
+successful result or a completion event. The parent retains its consumed/unknown
+attempt record and must not retry the same body with a new ID. If there is no
+correlated request ID (for example, transport EOF), the gate sends no fabricated
+response; the attempt remains outcome unknown.
+
+Native JSON-RPC errors are converted to fixed `NATIVE_RPC_FAILED` messages and
+their native error bodies are not forwarded. The first fixed diagnostic is
+retained across later EOF and cleanup failures.
+
 ## Limits
 
 The source enforces bounded frames, task text, pending input, output, and wall time. See constants in `windows_control_gate.py`. Fake tests verify protocol rules, not operating-system sandbox enforcement or private-root denial.

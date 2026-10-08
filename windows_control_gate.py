@@ -40,6 +40,13 @@ MAX_PENDING = 65_536
 MAX_OUTPUT = 16 * 1024 * 1024
 WALL_SECONDS = 900
 _QUEUE_CHUNK = 4096
+REMOTE_REJECT_CODES = frozenset({
+    "TASK_ALREADY_CONSUMED", "RPC_ID_REUSED", "CONTROL_TIMEOUT", "CONTROL_CLOSED",
+    "FRAME_LIMIT", "PENDING_STDIN_LIMIT", "OUTPUT_LIMIT", "NATIVE_EOF",
+    "NATIVE_RPC_FAILED", "NATIVE_RESPONSE_INVALID", "THREAD_START_INVALID",
+    "TURN_START_INVALID", "TURN_FAILED", "FINAL_INVALID", "FINAL_MISSING",
+    "RESULT_INVALID", "RESULT_SCHEMA_INVALID", "PROTOCOL_REJECTED",
+})
 
 
 class Reject(ValueError):
@@ -696,8 +703,26 @@ class WindowsControlProxy:
         self.child: BoundedChild | None = None
         self.closed = threading.Event()
         self.diagnostic_error = "NONE"
+        self.diagnostic_lock = threading.Lock()
         self.diagnostic_child_exit_code: int | None = None
         self.diagnostic_parent_location = "NONE"
+
+    def _remember_error(self, code: Any) -> str:
+        """Keep the first fixed diagnostic; cleanup must never replace it."""
+        value = (code if isinstance(code, str) and code.isupper() and len(code) <= 64
+                 and code.replace("_", "").isalnum() else "PROXY_REJECTED")
+        with self.diagnostic_lock:
+            if self.diagnostic_error == "NONE":
+                self.diagnostic_error = value
+            return self.diagnostic_error
+
+    def _write_rejection(self, request_id: Any, code: Any) -> None:
+        """Send a payload-free correlated JSON-RPC error for fixed known rejects."""
+        if (isinstance(request_id, bool) or not isinstance(request_id, (str, int))
+                or (isinstance(request_id, str) and (not request_id or len(request_id) > 128))):
+            return
+        fixed = code if isinstance(code, str) and code in REMOTE_REJECT_CODES else "PROTOCOL_REJECTED"
+        self._write({"id": request_id, "error": {"code": -32000, "message": fixed}})
 
     def _timed_put(self, q: queue.Queue[Any], value: Any) -> None:
         while not self.closed.is_set():
@@ -729,7 +754,7 @@ class WindowsControlProxy:
                 stage = "QUEUE"
                 self._timed_put(self.events, ("parent", message))
         except Reject as error:
-            self.diagnostic_error = str(error)
+            self._remember_error(str(error))
             self._timed_put(self.events, ("error", str(error)))
         except Exception as error:
             if not self.closed.is_set():
@@ -746,7 +771,7 @@ class WindowsControlProxy:
                     line = last.tb_lineno
                     if fn.isidentifier() and 0 < line < 10000:
                         self.diagnostic_parent_location = f"{fn}:{line}"
-                self.diagnostic_error = "PARENT_" + stage + "_" + category
+                self._remember_error("PARENT_" + stage + "_" + category)
                 self._timed_put(self.events, ("error", self.diagnostic_error))
 
     def _pump_child(self) -> None:
@@ -810,7 +835,7 @@ class WindowsControlProxy:
             if method is None:
                 return
             if "error" in message:
-                self._write(message)
+                self._write_rejection(request_id, "NATIVE_RPC_FAILED")
                 raise Reject("NATIVE_RPC_FAILED")
             result = message.get("result")
             self.gate.app_response(method, result)
@@ -874,21 +899,24 @@ class WindowsControlProxy:
                 except queue.Empty:
                     continue
                 if kind == "error":
-                    self.diagnostic_error = (value if isinstance(value, str) and value.isupper()
-                                             and len(value) <= 64 else "NATIVE_ERROR")
+                    self._remember_error(value)
                     raise Reject(value)
                 if kind == "parent_eof":
                     return
                 if kind == "parent":
-                    self._forward_parent(value)
+                    try:
+                        self._forward_parent(value)
+                    except Reject as error:
+                        self._remember_error(str(error))
+                        self._write_rejection(value.get("id"), str(error))
+                        raise
                 elif kind == "native":
                     self._native_message(value)
         except Reject as error:
-            self.diagnostic_error = (str(error) if str(error).isupper() and len(str(error)) <= 64
-                                     else "PROXY_REJECTED")
+            self._remember_error(str(error))
             raise
         except Exception:
-            self.diagnostic_error = "PROXY_INTERNAL_ERROR"
+            self._remember_error("PROXY_INTERNAL_ERROR")
             raise
         finally:
             self.closed.set()

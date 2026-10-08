@@ -6,7 +6,7 @@ Codex Bridge is a Windows named-pipe relay and strict app-server JSON-RPC gate i
 
 - Windows Codex CLI 0.160.0 has the fixed service-tier selector and settings-schema correction installed. The two-target transaction updated only the broker and its matching source hash in the private v2 receipt; settings and ACLs were preserved. The receipt binds all installed source hashes, and the workspace source binding remains valid. The earlier five-target transaction and its retained backups were also verified.
 - No broker READY result has been verified after the correction, and the selector has not been tested through the Linux-to-Windows path. A prior settled handshake requested `fast` and the native response was `priority`, but it predates this selector installation, submitted no task, and started no model turn.
-- The package suite passes 121 tests; three are skipped (Windows-native integration cases unavailable in this public package). A real elevated five-target scratch transaction passed commit, rollback, missing-target restore, and strict ACL comparisons without writing production files. Windows native child/Job Object tests are not exercised by the fake suite.
+- The package suite passes 131 tests; three are skipped (Windows-native integration cases unavailable in this public package). A real elevated five-target scratch transaction passed commit, rollback, missing-target restore, and strict ACL comparisons without writing production files. Windows native child/Job Object tests are not exercised by the fake suite.
 - Native sandbox enforcement, protected-root unreadability, and current Linux-to-Windows cross-machine authentication are not established by these results.
 - The older incomplete five-target journal is fully linked by matching old/new hashes and retained backup ACL evidence to a later five-target commit, followed by the two-target broker repair. It has no explicit supersession marker. This history does not block broker startup, but should be settled before a future full transaction recovery.
 
@@ -88,3 +88,6 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 
 The schema correction did not start the broker, authenticate Linux, perform a new
 handshake, run a model task, contact another session, or replay a prior task.
+## Fixed correlated rejections
+
+A parsed request rejected before a native response can receive a correlated JSON-RPC error with code `-32000` and a fixed message. The envelope contains no task text, native error body, or exception details. The Linux adapter accepts only the exact envelope and matching request ID. Rejections do not settle turns; keep the consumed/unknown record and do not replay the body under a new ID. Uncorrelated EOF remains outcome unknown.
