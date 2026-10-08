@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from linux_parent import COMPONENTS, LinuxThreadStart, normalize_service_tier, verify_selector_receipt
+from linux_parent import (COMPONENTS, LinuxThreadStart, normalize_service_tier,
+                          parse_fixed_rpc_error, verify_selector_receipt)
 from windows_control_gate import ProtocolGate, Reject
 
 
@@ -104,3 +105,25 @@ def test_public_build_is_strict_json_and_matches_files():
     root = Path(__file__).resolve().parent
     build = json.loads((root / "PUBLIC_BUILD.json").read_text())
     assert all(hashlib.sha256((root / n).read_bytes()).hexdigest() == h for n, h in build["files"].items())
+
+
+def test_correlated_fixed_rejection_preserves_no_replay_state():
+    parent = LinuxThreadStart(receipt())
+    parent.params()
+    error = {"id": 9, "error": {"code": -32000, "message": "TASK_ALREADY_CONSUMED"}}
+    assert parent.validate_error_response(error, 9) == "TASK_ALREADY_CONSUMED"
+    with pytest.raises(Reject, match="ALREADY_CONSUMED"):
+        parent.params()
+    with pytest.raises(Reject, match="NOT_PENDING"):
+        parent.validate_error_response(error, 9)
+
+
+@pytest.mark.parametrize("message,expected", [
+    ({"id": 8, "error": {"code": -32000, "message": "TASK_ALREADY_CONSUMED"}}, 9),
+    ({"id": 9, "error": {"code": -32000, "message": "private prompt text"}}, 9),
+    ({"id": 9, "error": {"code": -32000, "message": "TASK_ALREADY_CONSUMED", "data": "x"}}, 9),
+    ({"id": 9, "error": {"code": -1, "message": "TASK_ALREADY_CONSUMED"}}, 9),
+])
+def test_malformed_or_unmatched_remote_errors_are_not_echoed(message, expected):
+    with pytest.raises(Reject, match="REMOTE_ERROR_INVALID"):
+        parse_fixed_rpc_error(message, expected)

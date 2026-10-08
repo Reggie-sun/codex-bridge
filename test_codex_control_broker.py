@@ -13,6 +13,13 @@ import pytest
 import feige_codex_control_broker as broker
 import feige_codex_control_entry as entry
 from windows_control_gate import BOUNDARIES, BoundedChild, WindowsControlProxy
+from feige_settings_migration import BOUND_FIELDS as MIGRATED_SETTINGS_FIELDS
+from feige_settings_migration import SCHEMA as MIGRATED_SETTINGS_SCHEMA
+
+
+def test_broker_settings_contract_matches_private_settings_migration():
+    assert broker.CONFIG_SCHEMA == MIGRATED_SETTINGS_SCHEMA
+    assert {"schema", "workspace", "journal_root", "workspace_source_sha256"} == MIGRATED_SETTINGS_FIELDS
 
 
 def test_pipe_sddl_is_exact_user_and_system_dacl():

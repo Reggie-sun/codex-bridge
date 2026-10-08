@@ -10,6 +10,27 @@ from pathlib import Path, PureWindowsPath
 
 from windows_control_gate import BOUNDARIES, Reject
 
+REMOTE_REJECT_CODES = frozenset({
+    "TASK_ALREADY_CONSUMED", "RPC_ID_REUSED", "CONTROL_TIMEOUT", "CONTROL_CLOSED",
+    "FRAME_LIMIT", "PENDING_STDIN_LIMIT", "OUTPUT_LIMIT", "NATIVE_EOF",
+    "NATIVE_RPC_FAILED", "NATIVE_RESPONSE_INVALID", "THREAD_START_INVALID",
+    "TURN_START_INVALID", "TURN_FAILED", "FINAL_INVALID", "FINAL_MISSING",
+    "RESULT_INVALID", "RESULT_SCHEMA_INVALID", "PROTOCOL_REJECTED",
+})
+
+
+def parse_fixed_rpc_error(message: dict, expected_id: int | str) -> str:
+    """Accept only the gate's payload-free, correlated rejection envelope."""
+    if (not isinstance(message, dict) or set(message) != {"id", "error"}
+            or isinstance(expected_id, bool) or isinstance(message.get("id"), bool)
+            or not isinstance(expected_id, (int, str)) or message.get("id") != expected_id):
+        raise Reject("PARENT_REMOTE_ERROR_INVALID")
+    error = message.get("error")
+    if (not isinstance(error, dict) or set(error) != {"code", "message"}
+            or error.get("code") != -32000 or error.get("message") not in REMOTE_REJECT_CODES):
+        raise Reject("PARENT_REMOTE_ERROR_INVALID")
+    return error["message"]
+
 MODEL = "gpt-6.1-sol"
 EFFORT = "high"
 CLI_VERSION = "0.160.0"
@@ -103,3 +124,10 @@ class LinuxThreadStart:
             raise Reject("PARENT_THREAD_RESPONSE_INVALID")
         self._state = "VERIFIED"
         return identity
+
+    def validate_error_response(self, message: dict, expected_id: int | str) -> str:
+        """Recognize a fixed remote rejection without settling or enabling replay."""
+        if self._state != "OUTCOME_UNKNOWN":
+            raise Reject("PARENT_THREAD_START_NOT_PENDING")
+        self._state = "REJECTED"
+        return parse_fixed_rpc_error(message, expected_id)
