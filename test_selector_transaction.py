@@ -507,4 +507,3 @@ def test_unexpected_target_hash_fails_closed():
     tx._append = alter_after_prepare
     with pytest.raises(RuntimeError, match="TRANSACTION_RECOVERY_INCOMPLETE"):
         tx.apply(targets, payloads, journal)
-

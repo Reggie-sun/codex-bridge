@@ -402,4 +402,3 @@ def test_real_named_pipe_instance_has_verified_acl_and_bidirectional_io():
     k32.CloseHandle(handle)
     assert not worker.is_alive()
     assert not errors
-

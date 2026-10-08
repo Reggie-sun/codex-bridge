@@ -88,4 +88,3 @@ validation cannot be retried on the object. The host's durable no-replay ledger,
 
 The schema correction did not start the broker, authenticate Linux, perform a new
 handshake, run a model task, contact another session, or replay a prior task.
-

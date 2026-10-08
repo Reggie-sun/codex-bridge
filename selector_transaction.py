@@ -348,4 +348,3 @@ class SelectorTransaction:
                 for stage in stages.values():
                     if stage.exists():
                         self.ops.unlink(stage)
-
