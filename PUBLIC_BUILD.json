@@ -99,6 +99,23 @@
       "explicit_supersession_marker_present": false,
       "blocks_current_broker_startup": false,
       "settlement_required_before_future_full_transaction_recovery": true
+    },
+    "latest_rejection_gate_update": {
+      "status": "COMMITTED_AND_READ_ONLY_VERIFIED",
+      "target_count": 2,
+      "exact_targets": [
+        "windows_control_gate.py",
+        "codex-prompt-control-install.private.json"
+      ],
+      "target_hashes_match_new": true,
+      "backups_retained_and_match_old_hashes": true,
+      "target_backup_acls_match": true,
+      "receipt_source_hashes_match_installed_sources": true,
+      "receipt_other_fields_match_backup": true,
+      "settings_excluded_from_transaction": true,
+      "settings_acl_verified": true,
+      "broker_restarted": false,
+      "model_or_ssh_run": false
     }
   },
   "prior_runtime_evidence": {
